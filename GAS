@@ -4,7 +4,6 @@ Created on Sat Jul 23 15:42:22 2022
 
 @author: Fate
 """
-
 # -*- coding: utf-8 -*-
 """
 Created on Wed Oct 21 20:45:06 2020
@@ -22,7 +21,7 @@ E-mail: lidi.math@whu.edu.cn
 
 
 from cmath import nan
-from mpl_toolkits.mplot3d import Axes3D
+# from mpl_toolkits.mplot3d import Axes3D
 import matplotlib.pyplot as plt
 import torch.nn as nn
 from torch.autograd import Variable
@@ -33,34 +32,39 @@ import numpy as np
 import torch
 import random
 
-torch.manual_seed(1) # 为CPU设置随机种子
+torch.manual_seed(10) # 为CPU设置随机种子
+torch.cuda.manual_seed_all(1) # 为所有GPU设置随机种子
+np.random.seed(1)
 random.seed(1)
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--n_epochs", type=int, default=20000, help="训练的epochs总数")
-parser.add_argument("--n_sample", type=int, default=2000, help="总样本数")
-parser.add_argument("--batch_size", type=int, default=2000, help="每个batch的大小")
-parser.add_argument("--lr", type=float, default=0.05,
-                    help="Adam 算法中learning rate")
+parser.add_argument("--n_epochs", type=int, default=500, help="训练的epochs总数")
+parser.add_argument("--n_sample", type=int, default=51200, help="总样本数")
+parser.add_argument("--batch_size", type=int, default=512, help="每个batch的大小")
+parser.add_argument("--lr1", type=float, default=1e-3,
+                    help="Adam 算法中 PINNs 初始时刻的learning rate")
+parser.add_argument("--lr2", type=float, default=1e-4,
+                    help="Adam 算法中 Generator 初始时刻的learning rate")
 parser.add_argument("--b1", type=float, default=0.5,
                     help="Adam 算法中一阶矩估计的指数衰减率")
 parser.add_argument("--b2", type=float, default=0.999,
                     help="Adam 算法中二阶矩估计的指数衰减率")
 parser.add_argument("--n_cpu", type=int, default=8, help="使用的cpu个数")
 parser.add_argument("--input_dim", type=int, default=2, help="采样空间的维度")
-parser.add_argument("--domain", type=tuple, default=[[-1, 1], [
-                    -1, 1]], help="tuple类型, 必须与input_dim对应使用, 表示求解区域为[tuple[0][0],tuple[0][1]] x [tuple[1][0],tuple[1][1]]")
+parser.add_argument("--domain", type=tuple, default=[[0, 1], [
+                    0, 1]], help="tuple类型, 必须与input_dim对应使用, 表示求解区域为[tuple[0][0],tuple[0][1]] x [tuple[1][0],tuple[1][1]]")
 parser.add_argument("--epsilon", type=float, default=0.05,
                     help="生成(0,1)区域上采样点时,控制映射到边界点的区域参数, 即(0, epsilon)和(1-epsilon, 1)映射到边界")
 parser.add_argument("--n_test", type=int, default=1001,
                     help="在求解区域的每个维度上, 均匀n_test个测试点, 一共生成")
-parser.add_argument("--beta", type=float, default=10, help="PINNs中边界项前面的罚参")
-parser.add_argument("--epoch_P", type=float, default=1, help="PINNs训练时的epoch次数")
-parser.add_argument("--epoch_G", type=float, default=1, help="generator训练时的epoch次数")
+parser.add_argument("--beta", type=float, default=1e1, help="PINNs中边界项前面的罚参")
+parser.add_argument("--gamma", type=float, default=1e1, help="generator训练时梯度项的罚参")
+parser.add_argument("--epoch_P", type=float, default=6, help="PINNs训练时的epoch次数")
+parser.add_argument("--epoch_G", type=float, default=4, help="generator训练时的epoch次数")
 opt = parser.parse_args()
 print(opt)
 
-cuda = True if torch.cuda.is_available() else False
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu") 
 
 # long_x = np.pi
 # long_y = np.pi
@@ -85,18 +89,20 @@ cuda = True if torch.cuda.is_available() else False
 rc_x = 0.5
 rc_y = 0.5
 
-# source 项
-# def f_source(x): return torch.exp(-1000* (torch.add(torch.square(x[:,0] - rc_x),torch.square(x[:,1] - rc_y))))*(torch.square(-2000*torch.sub(x[:,0], rc_x)) + torch.square(-2000*torch.sub(x[:,1], rc_y)) - 4000 )
-def f_source(x): return torch.zeros_like(x[:,0])
-# 边界项
+# # source 项
+# def f_source(x): return torch.exp(-10* (torch.add(torch.square(x[:,0] - rc_x),torch.square(x[:,1] - rc_y))))*(torch.square(-20*torch.sub(x[:,0], rc_x)) + torch.square(-20*torch.sub(x[:,1], rc_y)) - 40 )
+# # 边界项
 # def g_bound(x): return torch.exp(-1000* (torch.add(torch.square(x[:,0] - rc_x),torch.square(x[:,1] - rc_y))))+1
-def g_bound(x): return torch.ones_like(x[:,0])
+# # 真解 u 的表达式
+# def u(x, y): return torch.exp(-10* (torch.add(torch.square(x - rc_x),torch.square(y - rc_y))))+1
 
-# 真解 u 的表达式
-# def u(x, y): return torch.exp(-1000* (torch.add(torch.square(x - rc_x),torch.square(y - rc_y))))+1
-def u(x, y): return torch.ones_like(x)
+# def f_source(x): return torch.zeros_like(x[:,0])
+# def g_bound(x): return torch.ones_like(x[:,0])
+# def u(x, y): return torch.ones_like(x)
 
-#u_exact = u(xi)
+def f_source(x): return 2*np.pi**2*torch.sin(np.pi*x[:,0])*torch.sin(np.pi*x[:,1])
+def g_bound(x): return torch.sin(np.pi*x[:,0])*torch.sin(np.pi*x[:,1])
+def u(x, y): return torch.sin(np.pi*x)*torch.sin(np.pi*y)
 
 
 # RANDOM_SEED = 42 # any random number
@@ -121,7 +127,7 @@ def _init_params(m):
 @torch.no_grad()
 def _init_G_params(m):
     if isinstance(m, nn.Linear):
-        nn.init.xavier_uniform_(m.weight)
+        nn.init.xavier_normal_(m.weight, 0.5)
         nn.init.constant_(m.bias, 0.0)
 
 class Block(nn.Module):
@@ -145,66 +151,72 @@ class rhoBlock(nn.Module):
         self.apply(_init_params)
 
     def forward(self, x):
-        res = torch.sigmoid(self.fc1(x))
-        res = torch.sigmoid(self.fc2(res))
+        res = torch.tanh(self.fc1(x))
+        res = torch.tanh(self.fc2(res))
         return torch.add(x, res)
 
 
 class PINNs(nn.Module):
     def __init__(self, input_size, output_size):
         super(PINNs, self).__init__()
-
-        # self.fc_input = nn.Linear(input_size, 16)
-        # self.block1 = Block(16, 16, 16)
-        # self.block2 = Block(16, 16, 16)
-        # self.block3 = Block(16, 16, 16)
-        # self.block4 = Block(16, 16, 16)
-        # self.block5 = Block(16, 16, 16)
-        # self.block6 = Block(16, 16, 16)
-        # self.fc_output = nn.Linear(16, output_size)
-        # self.apply(_init_params)
-
-        self.fc1 = nn.Linear(input_size, 64, bias=True)
-        self.fc2 = nn.Linear(64, 64, bias=True)
-        self.fc3 = nn.Linear(64, 64, bias=True)
-        self.fc4 = nn.Linear(64, 64, bias=True)
-        self.fc5 = nn.Linear(64, 64, bias=True)
-        self.fc6 = nn.Linear(64, 64, bias=True)
-        self.fc7 = nn.Linear(64, 16, bias=True)
-        self.fc8 = nn.Linear(16, output_size, bias=True)
-        self.relu = nn.LeakyReLU()
+        m = 32
+        self.fc_input = nn.Linear(input_size, m)
+        self.block1 = Block(m, m, m)
+        self.block2 = Block(m, m, m)
+        self.block3 = Block(m, m, m)
+        self.block4 = Block(m, m, m)
+        self.block5 = Block(m, m, m)
+        self.block6 = Block(m, m, m)
+        self.block7 = Block(m, m, m)
+        self.block8 = Block(m, m, m)
+        self.block9 = Block(m, m, m)
+        self.block10 = Block(m, m, m)
+        self.fc_output = nn.Linear(m, output_size)
         self.apply(_init_params)
 
-    # def forward(self, x):
-    #     x = torch.tanh(self.fc_input(x))
-    #     x = self.block1(x)
-    #     x = self.block2(x)
-    #     x = self.block3(x)
-    #     x = self.block4(x)
-    #     x = self.block5(x)
-    #     x = self.block6(x)
-    #     out = self.fc_output(x)
-
-    #     return out
+        # self.fc1 = nn.Linear(input_size, 64, bias=True)
+        # self.fc2 = nn.Linear(64, 64, bias=True)
+        # self.fc3 = nn.Linear(64, 64, bias=True)
+        # self.fc4 = nn.Linear(64, 64, bias=True)
+        # self.fc5 = nn.Linear(64, 64, bias=True)
+        # self.fc6 = nn.Linear(64, 64, bias=True)
+        # self.fc7 = nn.Linear(64, 16, bias=True)
+        # self.fc8 = nn.Linear(16, output_size, bias=True)
+        # self.apply(_init_params)
 
     def forward(self, x):
-        out = self.fc1(x)
-        out = torch.tanh(out)
-        out = self.fc2(out)
-        out = torch.tanh(out)
-        out = self.fc3(out)
-        out = torch.tanh(out)
-        out = self.fc4(out)
-        out = torch.tanh(out)
-        out = self.fc5(out)
-        out = torch.tanh(out)
-        out = self.fc6(out)
-        out = torch.tanh(out)
-        out = self.fc7(out)
-        out = torch.tanh(out)
-        out = self.fc8(out)
-        out = self.relu(out)
+        x = torch.tanh(self.fc_input(x))
+        x = self.block1(x)
+        x = self.block2(x)
+        x = self.block3(x)
+        x = self.block4(x)
+        x = self.block5(x)
+        x = self.block6(x)
+        x = self.block7(x)
+        x = self.block8(x)
+        x = self.block9(x)
+        x = self.block10(x)
+        out = self.fc_output(x)
+
         return out
+
+    # def forward(self, x):
+    #     out = self.fc1(x)
+    #     out = torch.tanh(out)
+    #     out = self.fc2(out)
+    #     out = torch.tanh(out)
+    #     out = self.fc3(out)
+    #     out = torch.tanh(out)
+    #     out = self.fc4(out)
+    #     out = torch.tanh(out)
+    #     out = self.fc5(out)
+    #     out = torch.tanh(out)
+    #     out = self.fc6(out)
+    #     out = torch.tanh(out)
+    #     out = self.fc7(out)
+    #     out = torch.tanh(out)
+    #     out = self.fc8(out)
+    #     return out
 
     def grad(self, x):
         xclone = x.clone().detach().requires_grad_(True)
@@ -266,62 +278,88 @@ class PINNs(nn.Module):
 class rhoGenerator(nn.Module):
     def __init__(self, input_size, output_size):
         super(rhoGenerator, self).__init__()
+        # m = 32
+        # self.fc_input = nn.Linear(input_size, m)
+        # self.block1 = rhoBlock(m, m, m)
+        # self.block2 = rhoBlock(m, m, m)
+        # # self.block3 = rhoBlock(m, m, m)
+        # # self.block4 = rhoBlock(m, m, m)
+        # # self.block5 = rhoBlock(m, m, m)
+        # # self.block6 = rhoBlock(m, m, m)
+        # # self.block7 = rhoBlock(m, m, m)
+        # # self.block8 = rhoBlock(m, m, m)
+        # # self.block9 = rhoBlock(m, m, m)
+        # # self.block10 = rhoBlock(m, m, m)
+        # self.fc_output = nn.Linear(m, output_size)
+        # self.LeakyReLU = nn.LeakyReLU()
+        # self.apply(_init_G_params)
 
-        # self.fc_input = nn.Linear(input_size, 16)
-        # self.block1 = rhoBlock(16, 16, 16)
-        # self.block2 = rhoBlock(16, 16, 16)
-        # self.block3 = rhoBlock(16, 16, 16)
-        # self.block4 = rhoBlock(16, 16, 16)
-        # self.block5 = rhoBlock(16, 16, 16)
-        # self.block6 = rhoBlock(16, 16, 16)
-        # self.fc_output = nn.Linear(16, output_size)
-        # self.Sigmoid = nn.Sigmoid()
-        # self.apply(_init_params)
-
-        self.fc1 = nn.Linear(input_size, 64, bias=True)
-        self.fc2 = nn.Linear(64, 64, bias=True)
-        self.fc3 = nn.Linear(64, 64, bias=True)
+        self.fc1 = nn.Linear(input_size, 40, bias=True)
+        self.fc2 = nn.Linear(40, 80, bias=True)
+        self.fc3 = nn.Linear(80, 40, bias=True)
         self.fc4 = nn.Linear(64, 64, bias=True)
         self.fc5 = nn.Linear(64, 64, bias=True)
-        self.fc6 = nn.Linear(64, 64, bias=True)
-        self.fc7 = nn.Linear(64, 64, bias=True)
-        self.fc8 = nn.Linear(64, output_size, bias=True)
-        self.LeakyReLU = nn.LeakyReLU()
+        self.fc6 = nn.Linear(64, 32, bias=True)
+        self.fc7 = nn.Linear(40, 20, bias=True)
+        self.fc8 = nn.Linear(20, output_size, bias=True)
+        # self.Softplus = nn.Sigmoid()
         self.apply(_init_G_params)
 
+    # def forward(self, x):
+    #     x = torch.tanh(self.fc_input(x))
+    #     x = self.block1(x)
+    #     x = self.block2(x)
+    #     # x = self.block3(x)
+    #     # x = self.block4(x)
+    #     # x = self.block5(x)
+    #     # x = self.block6(x)
+    #     # x = self.block7(x)
+    #     # x = self.block8(x)
+    #     # x = self.block9(x)
+    #     # x = self.block10(x)
+    #     out = self.fc_output(x)
+    #     out = torch.relu(out)
+    #     # out = out**2
+    #     out = torch.add(out, 0.001)
+    
     def forward(self, x):
-        # x = torch.tanh(self.fc_input(x))
-        # x = self.block1(x)
-        # x = self.block2(x)
-        # x = self.block3(x)
-        # x = self.block4(x)
-        # x = self.block5(x)
-        # x = self.block6(x)
-        # out = self.fc_output(x)
-        # out = self.Sigmoid(out)
-        
         out = self.fc1(x)
-        out = torch.tanh(out)
+        out = torch.relu(out)
         out = self.fc2(out)
-        out = torch.tanh(out)
+        out = torch.relu(out)
         out = self.fc3(out)
-        out = torch.tanh(out)
-        out = self.fc4(out)
-        out = torch.tanh(out)
-        out = self.fc5(out)
-        out = torch.tanh(out)
-        out = self.fc6(out)
-        out = torch.tanh(out)
+        out = torch.relu(out)
+        # out = self.fc4(out)
+        # out = torch.relu(out)
+        # out = out**2
+        # out = self.fc5(out)
+        # out = torch.relu(out)
+        # # out = out**2
+        # out = self.fc6(out)
+        # out = torch.relu(out)
+        # out = out**2
         out = self.fc7(out)
-        out = torch.tanh(out)
+        out = torch.relu(out)
+        # out = out**2
         out = self.fc8(out)
-        out = self.LeakyReLU(out)
-        out = out
+        # out = torch.relu(out)
+        out = out**2
+        # out = torch.nn.LeakyReLU()(out)
+        # out = torch.add(out, 0.001)
+
         return out
 
+    def grad(self, x):
+        xclone = x.clone().detach().requires_grad_(True)
+        uforward = self.forward(xclone)
+
+        grad = autograd.grad(uforward, xclone, grad_outputs=torch.ones_like(uforward),
+                             only_inputs=True, create_graph=True)
+        gradx = grad[0][:, 0].reshape((-1, 1))
+        grady = grad[0][:, 1].reshape((-1, 1))
+        return gradx, grady
 
 def mini_batch(X, mini_batch_size=64, seed=0):
-    np.random.seed(seed)
     # np.random.seed()
     m = X.shape[0]
     mini_batches = []
@@ -351,7 +389,7 @@ def DirichletWithZeros(model, xbound, g_bound):
     return u_x0, u_x1, u_y0, u_y1
 
 
-def Preject(x_input, domain, epsilon):
+def Project(x_input, domain, epsilon):
     x_label = np.zeros([x_input.shape[0], 1])
     out = torch.zeros([x_input.shape[0], x_input.shape[1]])
     x_domain0 = domain[0][0]
@@ -433,10 +471,11 @@ class PINNsLoss(nn.Module):
 
         loss_bound = torch.add(torch.add(torch.add(u_x0_square,u_x1_square),u_y0_square),u_y1_square)
         # loss_bound = torch.mean(loss_bound)
-        print("loss1 = ", loss)
-        print("loss_bound = ", loss_bound)
+        # print("loss1 = ", loss)
+        # print("loss_bound = ", loss_bound)
         loss = torch.add(loss, loss_bound, alpha=self.beta)
         if torch.isnan(loss):
+            # print("rho =", rho)
             print("loss.item()",loss.item())
             print("loss_bound.item()",loss_bound.item())
             raise TypeError("nan")
@@ -447,18 +486,19 @@ class PINNsLoss(nn.Module):
 # begin Fit
 
 pinns = PINNs(opt.input_dim, 1)
+pinns.to(device)
 generator = rhoGenerator(opt.input_dim, 1)
-
+generator.to(device)
 optimizer_P = torch.optim.Adam(
-    pinns.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
-optimizer_G = torch.optim.Adam(
-    generator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
-
-Tensor = torch.cuda.FloatTensor if cuda else torch.FloatTensor
+    pinns.parameters(), lr=opt.lr1, betas=(opt.b1, opt.b2), weight_decay=1e-4)
+optimizer_G = torch.optim.SGD(
+    generator.parameters(), lr=opt.lr2)
+scheduler_P = torch.optim.lr_scheduler.MultiStepLR(optimizer_P, milestones = [30, 40, 80, 160, 320], gamma = 0.5)
+scheduler_G = torch.optim.lr_scheduler.MultiStepLR(optimizer_G, milestones = [30, 40, 80, 160, 320], gamma = 0.5)
 
 # lossfunction = torch.nn.MSELoss()
 lossfunction = PINNsLoss(opt.beta, f_source, g_bound)
-
+lossfunction.to(device)
 lossitem_P = np.zeros([opt.n_epochs, 1])
 lossitem_G = np.zeros([opt.n_epochs, 1])
 error = np.zeros([opt.n_epochs, 1])
@@ -472,10 +512,10 @@ X = X.reshape((-1, 1))
 Y = Y.reshape((-1, 1))
 x = torch.zeros(opt.n_test*opt.n_test, 2)
 # mesh point
-x = torch.cat((X, Y), dim=1)
+x = torch.cat((X, Y), dim=1).to(device)
 
 u_exact = u(x[:, 0], x[:, 1]).reshape((-1, 1))
-u_exact = u_exact.detach().numpy()
+u_exact = u_exact.cpu().detach().numpy()
 u_exact = u_exact.reshape((-1, 1))
 
 X_re = X.reshape((opt.n_test, opt.n_test))
@@ -483,22 +523,29 @@ Y_re = Y.reshape((opt.n_test, opt.n_test))
 
 u_exact_re = u_exact.reshape((opt.n_test, opt.n_test))
 
-fig = plt.figure()
-axes = Axes3D(fig)
-axes.plot_surface(X_re, Y_re, u_exact_re, cmap='rainbow')
+# fig = plt.figure()
+# axes = Axes3D(fig)
+# axes.plot_surface(X_re, Y_re, u_exact_re, cmap='rainbow')
+# plt.title("u_exact_re")
+# plt.show()
+
+plt.figure()
+plt.imshow(u_exact_re, cmap='jet', extent =[opt.domain[0][0], opt.domain[0][1], opt.domain[1][0], opt.domain[1][1]])
+plt.colorbar()
 plt.title("u_exact_re")
 plt.show()
 
 # all data
 
-# xi_all = 2 * torch.rand(opt.n_sample, 2) - 1
-# xbound_all = 2 * torch.rand(opt.n_sample, 1) - 1
-xi_all = 2 * torch.rand(opt.n_sample, 2) - 1
-xbound_all = 2 * torch.rand(opt.n_sample, 1) - 1
+xi_all = (opt.domain[0][1]-opt.domain[0][0]) * torch.rand(opt.n_sample, 2) + opt.domain[0][0]
+xi_all.to(device)
+xbound_all = (opt.domain[0][1]-opt.domain[0][0]) * torch.rand(opt.n_sample, 1) + opt.domain[0][0]
+xbound_all.to(device)
 for epoch in range(opt.n_epochs):
-    print("xi_all[0:10] = ", xi_all[0:10])
-    
-
+    # xi_all = (opt.domain[0][1]-opt.domain[0][0]) * torch.rand(opt.n_sample, 2) + opt.domain[0][0]
+    # xi_all.to(device)
+    # xbound_all = (opt.domain[0][1]-opt.domain[0][0]) * torch.rand(opt.n_sample, 1) + opt.domain[0][0]
+    # xbound_all.to(device)
     mini_batches_xi = mini_batch( 
             xi_all, mini_batch_size=opt.batch_size)
     mini_batches_xbound = mini_batch(xbound_all, mini_batch_size = opt.batch_size)
@@ -509,9 +556,12 @@ for epoch in range(opt.n_epochs):
     
     for epoch_P in range(opt.epoch_P):
         for i in range(len(mini_batches_xi)):
-            xi_in= mini_batches_xi[i]
+            xi_in= mini_batches_xi[i].to(device)
             rho = generator(xi_in)
+            rho = (rho - rho.min() + 0.001)/(rho.max() - rho.min() + 0.001)
             rho = rho/rho.sum()*xi_in.shape[0]
+            # print("rho = ", rho)
+            # rho = torch.ones_like(xi_in)
             ###Preject是将一部分点映射到边界, 一部分映射到内部
             # x_ject, x_label = Preject(xi , opt.domain, opt.epsilon)
             # index_nonzero = np.nonzero(x_label)
@@ -520,7 +570,7 @@ for epoch in range(opt.n_epochs):
             # x_bound = x_ject[index_zero[0],:]
     
             ###下面只学习内部的点, 固定边界的点
-            xbound = mini_batches_xbound[i]
+            xbound = mini_batches_xbound[i].to(device)
             Ggradgrad_x1, Ggradgrad_x2 = pinns.laplace(xi_in)
     
             # x_bound_value = pinns(x_bound)
@@ -529,22 +579,48 @@ for epoch in range(opt.n_epochs):
     
             optimizer_P.zero_grad()
             loss.backward()
-            print(pinns.fc1.weight.grad.abs().sum())
-            print(pinns.fc1.bias.grad.abs().sum())
-            print(pinns.fc2.weight.grad.abs().sum())
-            print(pinns.fc2.bias.grad.abs().sum())
-            print(pinns.fc3.weight.grad.abs().sum())
-            print(pinns.fc3.bias.grad.abs().sum())
-            print(pinns.fc4.weight.grad.abs().sum())
-            print(pinns.fc4.bias.grad.abs().sum())
-            print(pinns.fc5.weight.grad.abs().sum())
-            print(pinns.fc5.bias.grad.abs().sum())
-            print(pinns.fc6.weight.grad.abs().sum())
-            print(pinns.fc6.bias.grad.abs().sum())
-            print(pinns.fc7.weight.grad.abs().sum())
-            print(pinns.fc7.bias.grad.abs().sum())
-            print(pinns.fc8.weight.grad.abs().sum())
-            print(pinns.fc8.bias.grad.abs().sum())
+            # print("==================== pinns grad ==================== ")
+            # print("pinns grad = ", pinns.fc_input.weight.grad.abs().sum())
+            # print("pinns grad = ", pinns.fc_input.bias.grad.abs().sum())
+            # print("pinns grad = ", pinns.block1.fc1.weight.grad.abs().sum())
+            # print("pinns grad = ", pinns.block1.fc1.bias.grad.abs().sum())
+            # print("pinns grad = ", pinns.block1.fc2.weight.grad.abs().sum())
+            # print("pinns grad = ", pinns.block1.fc2.bias.grad.abs().sum())
+            # print("pinns grad = ", pinns.block2.fc1.weight.grad.abs().sum())
+            # print("pinns grad = ", pinns.block2.fc1.bias.grad.abs().sum())
+            # print("pinns grad = ", pinns.block2.fc2.weight.grad.abs().sum())
+            # print("pinns grad = ", pinns.block2.fc2.bias.grad.abs().sum())
+            # print("pinns grad = ", pinns.block3.fc1.weight.grad.abs().sum())
+            # print("pinns grad = ", pinns.block3.fc1.bias.grad.abs().sum())
+            # print("pinns grad = ", pinns.block3.fc2.weight.grad.abs().sum())
+            # print("pinns grad = ", pinns.block3.fc2.bias.grad.abs().sum())
+            # print("pinns grad = ", pinns.block4.fc1.weight.grad.abs().sum())
+            # print("pinns grad = ", pinns.block4.fc1.bias.grad.abs().sum())
+            # print("pinns grad = ", pinns.block4.fc2.weight.grad.abs().sum())
+            # print("pinns grad = ", pinns.block4.fc2.bias.grad.abs().sum())
+            # print("pinns grad = ", pinns.block5.fc1.weight.grad.abs().sum())
+            # print("pinns grad = ", pinns.block5.fc1.bias.grad.abs().sum())
+            # print("pinns grad = ", pinns.block5.fc2.weight.grad.abs().sum())
+            # print("pinns grad = ", pinns.block5.fc2.bias.grad.abs().sum())
+            # print("pinns grad = ", pinns.fc_output.weight.grad.abs().sum())
+            # print("pinns grad = ", pinns.fc_output.bias.grad.abs().sum())
+            
+            # print("pinns grad = ", pinns.fc1.weight.grad.abs().sum())
+            # print("pinns grad = ", pinns.fc1.bias.grad.abs().sum())
+            # print("pinns grad = ", pinns.fc2.weight.grad.abs().sum())
+            # print("pinns grad = ", pinns.fc2.bias.grad.abs().sum())
+            # print("pinns grad = ", pinns.fc3.weight.grad.abs().sum())
+            # print("pinns grad = ", pinns.fc3.bias.grad.abs().sum())
+            # print("pinns grad = ", pinns.fc4.weight.grad.abs().sum())
+            # print("pinns grad = ", pinns.fc4.bias.grad.abs().sum())
+            # print("pinns grad = ", pinns.fc5.weight.grad.abs().sum())
+            # print("pinns grad = ", pinns.fc5.bias.grad.abs().sum())
+            # print("pinns grad = ", pinns.fc6.weight.grad.abs().sum())
+            # print("pinns grad = ", pinns.fc6.bias.grad.abs().sum())
+            # print("pinns grad = ", pinns.fc7.weight.grad.abs().sum())
+            # print("pinns grad = ", pinns.fc7.bias.grad.abs().sum())
+            # print("pinns grad = ", pinns.fc8.weight.grad.abs().sum())
+            # print("pinns grad = ", pinns.fc8.bias.grad.abs().sum())
             
             optimizer_P.step()
             loss_epoch_P += loss.item()
@@ -552,10 +628,13 @@ for epoch in range(opt.n_epochs):
     print('Epoch = [{}], lossitem_P = {:.10f}'.format(epoch ,lossitem_P[epoch][0]))
     for epoch_G in range(opt.epoch_G):
         for i in range(len(mini_batches_xi)):
-            xi_in= mini_batches_xi[i]
+            xi_in= mini_batches_xi[i].to(device)
             rho = generator(xi_in)
-            rho = rho/rho.sum()*xi_in.shape[0]
-            
+            rho = (rho - rho.min() + 0.001)/(rho.max() - rho.min() + 0.001)
+            rhoSum = rho.sum()
+            rho = rho/rhoSum*xi_in.shape[0]
+            # test_x1 = generator((xi_all[0,:]))
+            # print("test_x1", test_x1))
             ###Preject是将一部分点映射到边界, 一部分映射到内部
             # x_ject, x_label = Preject(xi , opt.domain, opt.epsilon)
             # index_nonzero = np.nonzero(x_label)
@@ -564,65 +643,144 @@ for epoch in range(opt.n_epochs):
             # x_bound = x_ject[index_zero[0],:]
     
             ###下面只学习内部的点, 固定边界的点
-            xbound = mini_batches_xbound[i]
+            xbound = mini_batches_xbound[i].to(device)
 
             Ggradgrad_x1, Ggradgrad_x2 = pinns.laplace(xi_in)
-    
-            # x_bound_value = pinns(x_bound)
             u_x0, u_x1, u_y0, u_y1 = DirichletWithZeros(pinns, xbound, g_bound)
-            loss = -lossfunction(xi_in, Ggradgrad_x1, Ggradgrad_x2, u_x0, u_x1, u_y0, u_y1, rho)
             
+            # Ggradgrad_x1 = torch.zeros_like(xi_in)
+            # Ggradgrad_x2 = torch.zeros_like(xi_in)
+            
+            # xbound_x0 = torch.cat((opt.domain[0][0] *torch.ones_like(xbound), xbound), dim=1)
+            # xbound_x1 = torch.cat((opt.domain[0][1] * torch.ones_like(xbound), xbound), dim=1)
+            # xbound_y0 = torch.cat((xbound, opt.domain[1][0] * torch.ones_like(xbound)), dim=1)
+            # xbound_y1 = torch.cat((xbound, opt.domain[1][1] * torch.ones_like(xbound)), dim=1)
+            # u_x0 = g_bound(xbound_x0)
+            # u_x1 = g_bound(xbound_x1)
+            # u_y0 = g_bound(xbound_y0)
+            # u_y1 = g_bound(xbound_y1)
+            
+            rhoGradx, rhoGrady = generator.grad(xi_in)
+            grad_l2 = torch.mean(torch.square(rhoGradx)+ torch.square(rhoGrady))
+            # grad_l1 = torch.mean(torch.abs(rhoGradx) + torch.abs(rhoGrady))
+            loss_grad = grad_l2/rhoSum*xi_in.shape[0]
+            loss_func = -lossfunction(xi_in, Ggradgrad_x1, Ggradgrad_x2, u_x0, u_x1, u_y0, u_y1, rho)
+            # print(f"epoch = {epoch}, epoch_G = {epoch_G}, loss_func= {loss_func}, loss_grad = {loss_grad}")
+            loss = loss_func + opt.gamma *loss_grad
             optimizer_G.zero_grad()
             loss.backward()
+            # print("==================== generator grad ==================== ")
+            # print("generator grad = ", generator.fc_input.weight.grad.abs().sum())
+            # print("generator grad = ", generator.fc_input.bias.grad.abs().sum())
+            # print("generator grad = ", generator.block1.fc1.weight.grad.abs().sum())
+            # print("generator grad = ", generator.block1.fc1.bias.grad.abs().sum())
+            # print("generator grad = ", generator.block1.fc2.weight.grad.abs().sum())
+            # print("generator grad = ", generator.block1.fc2.bias.grad.abs().sum())
+            # print("generator grad = ", generator.block2.fc1.weight.grad.abs().sum())
+            # print("generator grad = ", generator.block2.fc1.bias.grad.abs().sum())
+            # print("generator grad = ", generator.block2.fc2.weight.grad.abs().sum())
+            # print("generator grad = ", generator.block2.fc2.bias.grad.abs().sum())
+            # print("generator grad = ", generator.block3.fc1.weight.grad.abs().sum())
+            # print("generator grad = ", generator.block3.fc1.bias.grad.abs().sum())
+            # print("generator grad = ", generator.block3.fc2.weight.grad.abs().sum())
+            # print("generator grad = ", generator.block3.fc2.bias.grad.abs().sum())
+            # print("generator grad = ", generator.fc_output.weight.grad.abs().sum())
+            # print("generator grad = ", generator.fc_output.bias.grad.abs().sum())
+            
+            # print("generator grad = ", generator.fc1.weight.grad.abs().sum())
+            # print("generator grad = ", generator.fc1.bias.grad.abs().sum())
+            # print("generator grad = ", generator.fc2.weight.grad.abs().sum())
+            # print("generator grad = ", generator.fc2.bias.grad.abs().sum())
+            # print("generator grad = ", generator.fc3.weight.grad.abs().sum())
+            # print("generator grad = ", generator.fc3.bias.grad.abs().sum())
+            # print("generator grad = ", generator.fc4.weight.grad.abs().sum())
+            # print("generator grad = ", generator.fc4.bias.grad.abs().sum())
+            # print("generator grad = ", generator.fc5.weight.grad.abs().sum())
+            # print("generator grad = ", generator.fc5.bias.grad.abs().sum())
+            # print("generator grad = ", generator.fc6.weight.grad.abs().sum())
+            # print("generator grad = ", generator.fc6.bias.grad.abs().sum())
+            # print("generator grad = ", generator.fc7.weight.grad.abs().sum())
+            # print("generator grad = ", generator.fc7.bias.grad.abs().sum())
+            # print("generator grad = ", generator.fc8.weight.grad.abs().sum())
+            # print("generator grad = ", generator.fc8.bias.grad.abs().sum())
+
             optimizer_G.step()
             loss_epoch_G += loss.item()
     lossitem_G[epoch] = loss_epoch_G/(len(mini_batches_xi))
     print('Epoch = [{}], lossitem_G = {:.10f}'.format(epoch ,lossitem_G[epoch][0]))
+    
+    scheduler_P.step()
+    scheduler_G.step()
+    print('learing in Epoch[{}] = {:.10f}'.format(epoch, optimizer_P.state_dict()['param_groups'][0]['lr']))
 ## 每过10步输出一次误差图, 以此来观察训练过程
-    if (epoch+1) % 10 == 0:
+    if (epoch+1) % 1 == 0:
         print('Epoch [{}/{}], Loss_P: {:.10f}'
               .format(epoch+1, opt.n_epochs, lossitem_P[epoch][0]))
-        u_test = pinns(x)
-
+        with torch.no_grad():
+            u_test = pinns(x)
+            rho_test = generator(x)
+        rho_test = (rho_test - rho_test.min() + 0.001)/(rho_test.max() - rho_test.min() + 0.001)
+        rho_test = rho_test/rho_test.sum()*x.shape[0]
         u_exact_re = u_exact.reshape((opt.n_test, opt.n_test))
 
         u_test_re = u_test.reshape((opt.n_test, opt.n_test))
-
-        u_test = u_test.detach().numpy()
-        u_test_re = u_test_re.detach().numpy()
-        print("u_test_re=", u_test_re)
+        rho_test_re = rho_test.reshape((opt.n_test, opt.n_test))
+        
+        u_test = u_test.detach().cpu().numpy()
+        u_test_re = u_test_re.detach().cpu().numpy()
+        rho_test_re = rho_test_re.detach().cpu().numpy()
+        err = np.abs(u_exact_re - u_test_re)
+        err_l2 = np.linalg.norm(err)/err.size
+        print("Absolute err_l2 =", err_l2)
+        
         fig = plt.figure()
-        axes = Axes3D(fig)
-        axes.plot_surface(X_re, Y_re, u_test_re, cmap='rainbow')
+        plt.imshow(u_test_re, cmap='jet', extent =[opt.domain[0][0], opt.domain[0][1], opt.domain[1][0], opt.domain[1][1]])
+        plt.colorbar()
         plt.title("u_test in [X,Y]")
         plt.savefig('./utest_plot_img/pic-{}.png'.format(epoch + 1))
         plt.show()
 
-torch.save(pinns, 'saved_model/my_pinns_model')
-torch.save(generator, 'saved_model/my_generator_model')
+        # print("err =", u_exact_re - u_test_re)
+        fig = plt.figure()
+        plt.imshow(err, cmap='jet', extent =[opt.domain[0][0], opt.domain[0][1], opt.domain[1][0], opt.domain[1][1]])
+        plt.colorbar()
+        plt.title("error in [X,Y]")
+        plt.savefig('./err_plot_img/pic-{}.png'.format(epoch + 1))
+        plt.show()
+        
+        # print("rho_test_re=", u_test_re)
+        fig = plt.figure()
+        plt.imshow(rho_test_re, cmap='jet', extent =[opt.domain[0][0], opt.domain[0][1], opt.domain[1][0], opt.domain[1][1]])
+        plt.colorbar()
+        plt.title("rho_test")
+        plt.savefig('./rhotest_plot_img/pic-{}.png'.format(epoch + 1))
+        plt.show()
+
+    torch.save(pinns, 'saved_model/my_pinns_model')
+    torch.save(generator, 'saved_model/my_generator_model')
 u_test = pinns(x)
 
 u_exact_re = u_exact.reshape((opt.n_test, opt.n_test))
 
 u_test_re = u_test.reshape((opt.n_test, opt.n_test))
 
-u_test = u_test.detach().numpy()
-u_test_re = u_test_re.detach().numpy()
+u_test = u_test.cpu().detach().numpy()
+u_test_re = u_test_re.cpu().detach().numpy()
 
 fig = plt.figure()
-axes = Axes3D(fig)
-axes.plot_surface(X_re, Y_re, u_test_re, cmap='rainbow')
+plt.imshow(u_test_re, cmap='jet', extent =[opt.domain[0][0], opt.domain[0][1], opt.domain[1][0], opt.domain[1][1]])
+plt.colorbar()
 plt.title("u_test_re")
-plt.show()
+# plt.show()
 
 fig = plt.figure()
-axes = Axes3D(fig)
-axes.plot_surface(X_re, Y_re, u_exact_re, cmap='rainbow')
+plt.imshow(u_exact_re, cmap='jet', extent =[opt.domain[0][0], opt.domain[0][1], opt.domain[1][0], opt.domain[1][1]])
+plt.colorbar()
 plt.title("u_exact_re")
-plt.show()
+# plt.show()
 
 fig = plt.figure()
-axes = Axes3D(fig)
-axes.plot_surface(X_re, Y_re, u_exact_re-u_test_re, cmap='rainbow')
+plt.imshow(u_exact_re - u_test_re, cmap='jet', extent =[opt.domain[0][0], opt.domain[0][1], opt.domain[1][0], opt.domain[1][1]])
+plt.colorbar()
 plt.title("u_exact_re-u_test_re")
-plt.show()
+# plt.show()
