@@ -1,0 +1,21 @@
+%% Burgers equation and chaos
+nn = 256;
+steps = 200;
+
+dom = [-1 1]; x = chebfun('x',dom); tspan = linspace(0,1,steps+1);
+S = spinop(dom, tspan);
+S.lin = @(u) + 0.01/pi*diff(u,2);
+S.nonlin = @(u) - 0.5*diff(u.^2); % spin cannot parse "u.*diff(u)"
+S.init = -sin(pi*x);
+u = spin(S,nn,1e-4);
+
+% usol = zeros(nn,steps);
+% for i = 1:steps
+%     usol(:,i) = u{i}.values;
+% end
+% 
+% x = linspace(-1,1,nn);
+% x = x(1:end);
+% t = tspan;
+% pcolor(t,x,real(usol)); shading interp, axis tight, colormap(jet);
+% save('burgers_sine.mat','t','x','usol')
