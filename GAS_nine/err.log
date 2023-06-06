@@ -1,0 +1,5 @@
+Matplotlib created a temporary config/cache directory at /tmp/matplotlib-5r6bbdh_ because the default path (/home/lidi/.config/matplotlib) is not a writable directory; it is highly recommended to set the MPLCONFIGDIR environment variable to a writable directory, in particular to speed up the import of Matplotlib and to better support multiprocessing.
+/scratch/lidi/PaperUse/Code/GAS_nine/GAS.py:664: UserWarning: To copy construct from a tensor, it is recommended to use sourceTensor.clone().detach() or sourceTensor.clone().detach().requires_grad_(True), rather than torch.tensor(sourceTensor).
+  plt.scatter(torch.cat((torch.tensor(xi_add_all[:,0:1]),xi_bound_add_all[:,0:1])), torch.cat((torch.tensor(xi_add_all[:,1:2]),xi_bound_add_all[:,1:2])), s=0.5)
+/scratch/lidi/PaperUse/Code/GAS_nine/GAS.py:436: RuntimeWarning: More than 20 figures have been opened. Figures created through the pyplot interface (`matplotlib.pyplot.figure`) are retained until explicitly closed and may consume too much memory. (To control this warning, see the rcParam `figure.max_open_warning`).
+  fig, axs = plt.subplots(2, 3, figsize=(10,6), sharex=True, sharey=True, dpi=300)
