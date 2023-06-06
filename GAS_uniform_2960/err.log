@@ -1,0 +1,4 @@
+Matplotlib created a temporary config/cache directory at /tmp/matplotlib-8nz6mm6v because the default path (/home/lidi/.config/matplotlib) is not a writable directory; it is highly recommended to set the MPLCONFIGDIR environment variable to a writable directory, in particular to speed up the import of Matplotlib and to better support multiprocessing.
+Matplotlib is building the font cache; this may take a moment.
+/scratch/lidi/Test/GAS_uniform_2960/GAS.py:563: UserWarning: To copy construct from a tensor, it is recommended to use sourceTensor.clone().detach() or sourceTensor.clone().detach().requires_grad_(True), rather than torch.tensor(sourceTensor).
+  plt.scatter(torch.cat((torch.tensor(xi_add_all[:,0:1]),xi_bound_add_all[:,0:1])), torch.cat((torch.tensor(xi_add_all[:,1:2]),xi_bound_add_all[:,1:2])), s=0.5)
