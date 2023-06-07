@@ -1,0 +1,4 @@
+Matplotlib created a temporary config/cache directory at /tmp/matplotlib-5c35nuxw because the default path (/home/lidi/.config/matplotlib) is not a writable directory; it is highly recommended to set the MPLCONFIGDIR environment variable to a writable directory, in particular to speed up the import of Matplotlib and to better support multiprocessing.
+Matplotlib is building the font cache; this may take a moment.
+/scratch/lidi/PaperUse/GAS_nd_paper_use_global/GAS_nd.py:610: RuntimeWarning: divide by zero encountered in log
+  loss_epoch_P_array = np.log(loss_epoch_P_array)
